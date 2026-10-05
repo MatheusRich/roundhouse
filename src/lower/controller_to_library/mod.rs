@@ -1236,6 +1236,7 @@ fn build_methods(
                 &deferred_tails,
                 &collect_rescue_handlers(controller, all_controllers, format_breadth),
                 &wraps,
+                reads_action_name(controller, all_controllers),
             ),
         );
     }
@@ -1970,6 +1971,26 @@ fn ancestor_chain<'a>(controller: &Controller, all: &'a [Controller]) -> Vec<&'a
     chain
 }
 
+/// Does this controller or an ancestor read `action_name`, bare or on
+/// `self`? The scan covers actions, filter blocks and filter guards. A
+/// concern's methods count too, because ingest splices them into the
+/// controller.
+fn reads_action_name(controller: &Controller, all: &[Controller]) -> bool {
+    let action_name = Symbol::from("action_name");
+    let reads = |e: &Expr| body_calls_method(e, &action_name);
+    let mut chain = ancestor_chain(controller, all);
+    chain.push(controller);
+    chain.iter().any(|c| {
+        c.actions().any(|a| reads(&a.body))
+            || c.filters().any(|f| {
+                [&f.block, &f.if_cond_expr, &f.unless_cond_expr]
+                    .into_iter()
+                    .flatten()
+                    .any(reads)
+            })
+    })
+}
+
 /// Does this filter body contain a respond-capable call (render /
 /// redirect_to / head / render_404)? Scopes the `return if performed?`
 /// halting check to filters that need it — pure-assignment filters
@@ -2135,6 +2156,16 @@ fn insert_baseline_controller_methods(info: &mut crate::analyze::ClassInfo) {
         .or_insert_with(|| fn_sig(vec![], Ty::Sym));
     info.instance_method_kinds
         .entry(Symbol::from("request_format"))
+        .or_insert(AccessorKind::AttributeReader);
+
+    info.instance_methods
+        .entry(Symbol::from("assign_action_name"))
+        .or_insert_with(|| fn_sig(vec![(Symbol::from("name"), Ty::Sym)], Ty::Str));
+    info.instance_methods
+        .entry(Symbol::from("action_name"))
+        .or_insert_with(|| fn_sig(vec![], Ty::Str));
+    info.instance_method_kinds
+        .entry(Symbol::from("action_name"))
         .or_insert(AccessorKind::AttributeReader);
 }
 

@@ -90,8 +90,22 @@ pub(super) fn synthesize_process_action(
     deferred_tails: &std::collections::HashMap<Symbol, Expr>,
     rescues: &[RescueHandler],
     wraps: &WrapFilters,
+    reads_action_name: bool,
 ) -> MethodDef {
     let mut stmts: Vec<Expr> = Vec::new();
+
+    // Rails' `action_name` is controller state, not a dispatcher local.
+    // Only a controller that reads it gets this call, because the Rust
+    // target's controllers have no `assign_action_name`.
+    if reads_action_name {
+        stmts.push(syn(ExprNode::Send {
+            recv: None,
+            method: Symbol::from("assign_action_name"),
+            args: vec![var_ref("action_name")],
+            block: None,
+            parenthesized: true,
+        }));
+    }
 
     for p in preamble {
         let (stmt, halt_check) = match p {

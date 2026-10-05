@@ -302,6 +302,9 @@ module ActionController
     # dispatcher assigns it; a `url_for` options hash reads it to fill a
     # segment the hash leaves out, as Rails recalls it.
     attr_accessor :path_parameters
+    # Rails' `action_name`, as a String. The synthesized `process_action`
+    # sets it only in a controller that reads it.
+    attr_reader   :action_name
     attr_reader   :status, :body, :location, :content_type
     # Cache-Control, split into two TYPED readers rather than Rails'
     # one mixed Hash. Rails' `response.cache_control` is
@@ -316,6 +319,7 @@ module ActionController
     def initialize
       @params  = {}
       @path_parameters = {}
+      @action_name = ""
       @session = ActionDispatch::Session.new
       @flash   = ActionDispatch::Flash.new
       @status  = 200
@@ -381,6 +385,15 @@ module ActionController
     def assign_http_session(value)
       @session = value
       @session
+    end
+
+    # The dispatcher's seat for `action_name`. The router gives
+    # `process_action` a Symbol, and Rails gives the action a String,
+    # so this method converts it. A framework-only name avoids the
+    # `name=` collision that `assign_http_session` describes.
+    def assign_action_name(name)
+      @action_name = name.to_s
+      @action_name
     end
 
     # Subclasses override. Error message omits `self.class.name` —

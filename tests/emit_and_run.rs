@@ -4911,6 +4911,135 @@ fn a_template_only_action_is_fed_by_its_before_action() {
         .assert_passes();
 }
 
+const ARTICLES_CONTROLLER: &str = "app/controllers/articles_controller.rb";
+const TRACK_FILTER: &str = "  def track\n    \
+                              @tracked = %w[index show].include?(action_name)\n    \
+                              @action = action_name\n  \
+                            end\n";
+const TRACKED_CALLS: &str = "<p id=\"tracked\"><%= @tracked %> <%= @action %></p>\n";
+const TRACKED_ASSERTION: &str = "    assert_match(/<p id=\"tracked\">true index<\\/p>/, response.body)\n";
+
+/// A filter reads `action_name`. Rails gives the name of the action as a
+/// String. The emitted filter body raised NameError, because only the
+/// dispatcher had `action_name`, and the dispatcher gave a Symbol.
+#[test]
+fn a_before_action_reads_action_name() {
+    on_the_index(
+        emit_and_run::real_blog()
+            .edit(
+                ARTICLES_CONTROLLER,
+                "  before_action :set_article,",
+                "  before_action :track\n  before_action :set_article,",
+            )
+            .edit(ARTICLES_CONTROLLER, "  private\n", &format!("  private\n{TRACK_FILTER}\n")),
+        TRACKED_CALLS,
+        TRACKED_ASSERTION,
+    )
+    .assert_passes();
+}
+
+/// The same filter from a concern that the controller includes.
+#[test]
+fn a_before_action_from_a_concern_reads_action_name() {
+    on_the_index(
+        emit_and_run::real_blog()
+            .write(
+                "app/controllers/concerns/tracks_action.rb",
+                &format!(
+                    "module TracksAction\n  \
+                       extend ActiveSupport::Concern\n\n  \
+                       included do\n    \
+                         before_action :track\n  \
+                       end\n\n  \
+                       private\n\n{TRACK_FILTER}end\n"
+                ),
+            )
+            .edit(
+                ARTICLES_CONTROLLER,
+                "class ArticlesController < ApplicationController\n",
+                "class ArticlesController < ApplicationController\n  include TracksAction\n",
+            ),
+        TRACKED_CALLS,
+        TRACKED_ASSERTION,
+    )
+    .assert_passes();
+}
+
+/// A private method reads `self.action_name`, and the action calls it.
+#[test]
+fn a_private_method_reads_self_action_name() {
+    on_the_index(
+        emit_and_run::real_blog()
+            .edit(
+                ARTICLES_CONTROLLER,
+                "    @articles = Article.includes(:comments).order(created_at: :desc)\n",
+                "    @articles = Article.includes(:comments).order(created_at: :desc)\n    \
+                   @label = label\n",
+            )
+            .edit(
+                ARTICLES_CONTROLLER,
+                "  private\n",
+                "  private\n  def label\n    self.action_name\n  end\n\n",
+            ),
+        "<p id=\"label\"><%= @label %></p>\n",
+        "    assert_match(/<p id=\"label\">index<\\/p>/, response.body)\n",
+    )
+    .assert_passes();
+}
+
+/// An inherited filter and an inlined filter read `action_name`, for the
+/// target that runs the dispatcher natively.
+fn action_name_app() -> emit_and_run::Overlay {
+    emit_and_run::empty_app()
+        .write(
+            "db/schema.rb",
+            "ActiveRecord::Schema.define do\n  create_table \"widgets\", force: :cascade do |t|\n    t.string \"name\"\n  end\nend\n",
+        )
+        .write(
+            "app/controllers/application_controller.rb",
+            "class ApplicationController < ActionController::Base\n  \
+               before_action :track\n\n  \
+               private\n\n  \
+               def track\n    \
+                 @tracked = %w[index show].include?(action_name)\n  \
+               end\n\
+             end\n",
+        )
+        .write("config/routes.rb", "Rails.application.routes.draw do\n  get \"/widgets\", to: \"widgets#index\"\nend\n")
+        .write(
+            "app/controllers/widgets_controller.rb",
+            "class WidgetsController < ApplicationController\n  \
+               before_action :name_it\n\n  \
+               def index\n    \
+                 render plain: \"#{@tracked} #{@name}\"\n  \
+               end\n\n  \
+               private\n\n  \
+               def name_it\n    \
+                 @name = action_name\n  \
+               end\n\
+             end\n",
+        )
+}
+
+const ACTION_NAME_ASSERTIONS: &str = r#"
+require_relative "app/controllers/widgets_controller"
+controller = WidgetsController.new
+controller.process_action(:index)
+raise "action_name: #{controller.body}" unless controller.body == "true index"
+puts "action_name passed"
+"#;
+
+#[test]
+fn filters_read_action_name_as_a_string() {
+    action_name_app().run_ruby(ACTION_NAME_ASSERTIONS).assert_passes();
+}
+
+#[test]
+#[ignore = "requires the Spinel toolchain"]
+fn filters_read_action_name_as_a_string_on_spinel() {
+    action_name_app().run_spinel(ACTION_NAME_ASSERTIONS).assert_passes();
+}
+
 /// `case/in` structural pattern matching (#f9): taking `CaseMatchNode`
 /// from an ingest error to a typed `CaseMatch` node is a claim the
 /// emitted program actually dispatches through it (invariant 6), not
