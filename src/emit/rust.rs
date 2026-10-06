@@ -1085,7 +1085,8 @@ pub fn emit(app: &App) -> Vec<EmittedFile> {
                 // `action_name`, so only that controller gets the field
                 // and the two methods. The other controllers emit as
                 // before.
-                let (body, ac_shim) = if lc_calls_method(lc, "assign_action_name") {
+                let sets_action_name = lc_calls_method(lc, "assign_action_name");
+                let (body, ac_shim) = if sets_action_name {
                     (with_action_name_field(&body, &struct_name), ac_shim + &action_name_shim(&struct_name))
                 } else {
                     (body, ac_shim)
@@ -1102,6 +1103,7 @@ pub fn emit(app: &App) -> Vec<EmittedFile> {
                     lc.name.0.as_str(),
                     &flat_routes_2c,
                     has_flash,
+                    sets_action_name,
                 );
                 let content = format!("{CONTROLLER_IMPORTS}{body}{ac_shim}{axum_wrappers}");
                 files.push(EmittedFile {
@@ -1546,6 +1548,7 @@ fn render_axum_handler_wrappers(
     controller_name: &str,
     flat_routes: &[crate::lower::FlatRoute],
     has_flash: bool,
+    sets_action_name: bool,
 ) -> String {
     use crate::dialect::HttpMethod;
     // Dedup by action — Rails' `root "articles#index"` and
@@ -1675,6 +1678,11 @@ fn render_axum_handler_wrappers(
         // cleared below when the action sets no new flash).
         if has_flash {
             body.push_str("    c.flash = crate::http::flash_from_request(&headers);\n");
+        }
+        // The wrapper calls the action without `process_action`, so it
+        // sets `action_name` itself.
+        if sets_action_name {
+            body.push_str(&format!("    c.assign_action_name({action:?});\n"));
         }
         body.push_str(&format!("    c.{method_name}();\n"));
         // Translate the thread-local response, then sweep the flash the

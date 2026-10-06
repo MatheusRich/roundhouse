@@ -64,6 +64,35 @@ fn only_a_controller_that_reads_action_name_assigns_it() {
     assert!(!notes.contains("assign_action_name"), "{notes}");
 }
 
+/// The emitted Rust HTTP handler for `index` in `name`'s controller.
+fn rust_index_handler(name: &str) -> String {
+    let mut app = app();
+    roundhouse::analyze::Analyzer::new(&app).analyze(&mut app);
+    let file = roundhouse::emit::rust::emit(&app)
+        .into_iter()
+        .find(|f| f.path.ends_with(format!("{name}.rs")))
+        .unwrap_or_else(|| panic!("{name}.rs emitted"))
+        .content;
+    let start = file.find("pub async fn _axum_index").expect("index handler emitted");
+    let end = file[start..].find("\n}\n").map_or(file.len(), |i| start + i);
+    file[start..end].to_string()
+}
+
+/// The Rust HTTP handler calls the action without `process_action`, so
+/// it sets the action name itself.
+#[test]
+fn the_rust_http_handler_sets_the_action_name() {
+    let posts = rust_index_handler("posts_controller");
+    let assign = posts.find("c.assign_action_name(\"index\");");
+    let call = posts.find("c.index();");
+    assert!(
+        matches!((assign, call), (Some(a), Some(c)) if a < c),
+        "the handler sets the name before the action:\n{posts}"
+    );
+    let notes = rust_index_handler("notes_controller");
+    assert!(!notes.contains("assign_action_name"), "{notes}");
+}
+
 fn send_types<'a>(e: &'a Expr, method: &str, out: &mut Vec<Option<&'a Ty>>) {
     if let ExprNode::Send { method: m, .. } = &*e.node {
         if m.as_str() == method {
