@@ -1080,6 +1080,16 @@ pub fn emit(app: &App) -> Vec<EmittedFile> {
                     }}\n",
                     name = lc.name.0.as_str()
                 );
+                // Rails' `action_name`. The lowered dispatcher calls
+                // `assign_action_name` only in a controller that reads
+                // `action_name`, so only that controller gets the field
+                // and the two methods. The other controllers emit as
+                // before.
+                let (body, ac_shim) = if lc_calls_method(lc, "assign_action_name") {
+                    (with_action_name_field(&body, &struct_name), ac_shim + &action_name_shim(&struct_name))
+                } else {
+                    (body, ac_shim)
+                };
                 // Does this controller carry a `flash` field? Only
                 // controllers that read `self.flash` for view display
                 // (index/show/…) get one (see `collect_ivar_types`);
@@ -1462,6 +1472,51 @@ pub fn emit(app: &App) -> Vec<EmittedFile> {
     }
     rev_kept.reverse();
     rev_kept
+}
+
+/// Does a method of `lc` call `method` on `self`?
+fn lc_calls_method(lc: &crate::dialect::LibraryClass, method: &str) -> bool {
+    fn walk(e: &crate::expr::Expr, method: &str) -> bool {
+        if let crate::expr::ExprNode::Send { recv, method: m, .. } = &*e.node {
+            if m.as_str() == method
+                && recv.as_ref().is_none_or(|r| matches!(&*r.node, crate::expr::ExprNode::SelfRef))
+            {
+                return true;
+            }
+        }
+        let mut found = false;
+        e.node.for_each_child(&mut |c| found = found || walk(c, method));
+        found
+    }
+    lc.methods.iter().any(|m| walk(&m.body, method))
+}
+
+/// Add the `action_name` field to the controller struct in `body`. The
+/// field is a String, so `Default` gives `""`, as the Ruby runtime does.
+/// A controller that writes `@action_name` already has the field.
+fn with_action_name_field(body: &str, struct_name: &str) -> String {
+    if body.contains("pub action_name:") {
+        return body.to_string();
+    }
+    let head = format!("pub struct {struct_name} {{\n");
+    body.replacen(&head, &format!("{head}    pub action_name: String,\n"), 1)
+}
+
+/// The Rust form of the runtime's `action_name` reader and the
+/// dispatcher's `assign_action_name`. The router gives the action as a
+/// `&str`, so the conversion to a String is `to_string`.
+fn action_name_shim(struct_name: &str) -> String {
+    format!(
+        "\nimpl {struct_name} {{\n\
+         \x20   pub fn action_name(&self) -> String {{\n\
+         \x20       self.action_name.clone()\n\
+         \x20   }}\n\
+         \x20   pub fn assign_action_name(&mut self, name: &str) -> String {{\n\
+         \x20       self.action_name = name.to_string();\n\
+         \x20       self.action_name.clone()\n\
+         \x20   }}\n\
+         }}\n"
+    )
 }
 
 /// Wedge 2c.2: emit `pub async fn _axum_<action>` free fns for

@@ -1,6 +1,6 @@
 //! `action_name` on a controller. The synthesized `process_action` calls
 //! `assign_action_name` only in a controller that reads `action_name`,
-//! because the Rust target's controllers have no such method. The
+//! so the other controllers emit the same code as before. The
 //! lowered call and the reader must also type, because the lowered-typing
 //! check requires every expression to have a type.
 
@@ -59,7 +59,7 @@ fn emitted_controller(name: &str) -> String {
 #[test]
 fn only_a_controller_that_reads_action_name_assigns_it() {
     let posts = emitted_controller("posts_controller");
-    assert!(posts.contains("assign_action_name(action_name)"), "{posts}");
+    assert!(posts.contains("assign_action_name(routed_action)"), "{posts}");
     let notes = emitted_controller("notes_controller");
     assert!(!notes.contains("assign_action_name"), "{notes}");
 }

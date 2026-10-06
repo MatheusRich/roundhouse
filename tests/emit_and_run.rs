@@ -4987,6 +4987,90 @@ fn a_private_method_reads_self_action_name() {
     .assert_passes();
 }
 
+/// A block filter and a lambda filter read `action_name`. Their bodies run
+/// inside the dispatcher, so a bare `action_name` read the dispatcher's
+/// Symbol, and `self.action_name` read `""`.
+#[test]
+fn block_and_lambda_filters_read_action_name() {
+    on_the_index(
+        emit_and_run::real_blog().edit(
+            ARTICLES_CONTROLLER,
+            "  before_action :set_article,",
+            "  before_action { @bare = action_name }\n  \
+               before_action -> { @own = self.action_name }\n  \
+               before_action :set_article,",
+        ),
+        "<p id=\"names\"><%= @bare.inspect %> <%= @own.inspect %></p>\n",
+        "    assert_match(/<p id=\"names\">&quot;index&quot; &quot;index&quot;<\\/p>/, response.body)\n",
+    )
+    .assert_passes();
+}
+
+/// A block `after_action` reads `action_name`. It runs inside the
+/// dispatcher too, so it read the dispatcher's Symbol.
+#[test]
+fn a_block_after_action_reads_action_name() {
+    emit_and_run::real_blog()
+        .edit(
+            ARTICLES_CONTROLLER,
+            "  before_action :set_article,",
+            "  after_action only: :index do\n    \
+                 raise \"after_action read #{action_name.inspect}\" unless action_name == \"index\"\n  \
+               end\n  \
+               before_action :set_article,",
+        )
+        .run_test(CONTROLLER_TEST)
+        .assert_passes();
+}
+
+/// A `rescue_from` block reads `action_name`. The dispatcher runs the
+/// handler, so it read the dispatcher's Symbol.
+#[test]
+fn a_rescue_from_block_reads_action_name() {
+    emit_and_run::real_blog()
+        .edit(
+            ARTICLES_CONTROLLER,
+            "  before_action :set_article,",
+            "  rescue_from ActiveRecord::RecordNotFound do\n    \
+                 redirect_to articles_path, notice: \"missing #{action_name.inspect}\"\n  \
+               end\n  \
+               before_action :set_article,",
+        )
+        .edit(
+            CONTROLLER_TEST,
+            INDEX_ASSERTION,
+            &format!(
+                "{INDEX_ASSERTION}    get \"/articles/0\"\n    \
+                   follow_redirect!\n    \
+                   assert_match(/id=\"notice\">missing &quot;show&quot;</, response.body)\n"
+            ),
+        )
+        .run_test(CONTROLLER_TEST)
+        .assert_passes();
+}
+
+/// An inherited filter has an `if:` lambda that reads `action_name`. The
+/// dispatcher runs the guard, so it compared the dispatcher's Symbol with
+/// a String, and the filter never ran.
+#[test]
+fn an_inherited_filter_guard_reads_action_name() {
+    on_the_index(
+        emit_and_run::real_blog().edit(
+            "app/controllers/application_controller.rb",
+            "  allow_browser versions: :modern\n",
+            "  allow_browser versions: :modern\n  \
+               before_action :mark, if: -> { action_name == \"index\" }\n\n  \
+               private\n\n  \
+               def mark\n    \
+                 @marked = true\n  \
+               end\n",
+        ),
+        "<p id=\"marked\"><%= @marked.inspect %></p>\n",
+        "    assert_match(/<p id=\"marked\">true<\\/p>/, response.body)\n",
+    )
+    .assert_passes();
+}
+
 /// An inherited filter and an inlined filter read `action_name`, for the
 /// target that runs the dispatcher natively.
 fn action_name_app() -> emit_and_run::Overlay {

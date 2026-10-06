@@ -47,7 +47,8 @@ use crate::lower::controller::body::{
 
 use self::params::{helper_spec_map, ParamsSpec, ParamsSpecs};
 use self::process_action::{
-    halt_if_performed, synthesize_process_action, PreambleStmt, RescueHandler,
+    dispatcher_bodies, halt_if_performed, synthesize_process_action, PreambleStmt,
+    RescueHandler,
 };
 use self::rewrites::{
     rewrite_assoc_through_parent_typed, rewrite_destroy_bang,
@@ -1226,6 +1227,12 @@ fn build_methods(
         ));
     }
     if let Some((preamble, wraps)) = pending_dispatcher {
+        let rescues = collect_rescue_handlers(controller, all_controllers, format_breadth);
+        let reads = reads_action_name(
+            controller,
+            all_controllers,
+            &dispatcher_bodies(&preamble, &wraps, &rescues),
+        );
         methods.insert(
             dispatcher_at,
             synthesize_process_action(
@@ -1234,9 +1241,9 @@ fn build_methods(
                 &inherited,
                 controller.name.0.clone(),
                 &deferred_tails,
-                &collect_rescue_handlers(controller, all_controllers, format_breadth),
+                &rescues,
                 &wraps,
-                reads_action_name(controller, all_controllers),
+                reads,
             ),
         );
     }
@@ -1972,23 +1979,26 @@ fn ancestor_chain<'a>(controller: &Controller, all: &'a [Controller]) -> Vec<&'a
 }
 
 /// Does this controller or an ancestor read `action_name`, bare or on
-/// `self`? The scan covers actions, filter blocks and filter guards. A
-/// concern's methods count too, because ingest splices them into the
-/// controller.
-fn reads_action_name(controller: &Controller, all: &[Controller]) -> bool {
+/// `self`? The scan covers actions, filter guards, and `dispatched`, the
+/// bodies that the dispatcher runs (see `dispatcher_bodies`). Block and
+/// lambda filters stay `Unknown` in the controller body, so only
+/// `dispatched` has them. A concern's methods count too, because ingest
+/// splices them into the controller.
+fn reads_action_name(controller: &Controller, all: &[Controller], dispatched: &[&Expr]) -> bool {
     let action_name = Symbol::from("action_name");
     let reads = |e: &Expr| body_calls_method(e, &action_name);
     let mut chain = ancestor_chain(controller, all);
     chain.push(controller);
-    chain.iter().any(|c| {
-        c.actions().any(|a| reads(&a.body))
-            || c.filters().any(|f| {
-                [&f.block, &f.if_cond_expr, &f.unless_cond_expr]
-                    .into_iter()
-                    .flatten()
-                    .any(reads)
-            })
-    })
+    dispatched.iter().any(|e| reads(e))
+        || chain.iter().any(|c| {
+            c.actions().any(|a| reads(&a.body))
+                || c.filters().any(|f| {
+                    [&f.block, &f.if_cond_expr, &f.unless_cond_expr]
+                        .into_iter()
+                        .flatten()
+                        .any(reads)
+                })
+        })
 }
 
 /// Does this filter body contain a respond-capable call (render /
