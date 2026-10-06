@@ -3265,6 +3265,49 @@ fn a_partial_reading_a_reserved_word_local_assign_runs() {
     run.assert_passes();
 }
 
+/// `Rails.application.routes.recognize_path` in a helper. `check` was
+/// clean, and the emitted app raised NameError on `#routes`. Each
+/// expected value is the output of Rails 7.2.4 for the same routes.
+/// Rails returns Symbol keys with String values, puts `:format` last,
+/// and raises `ActionController::RoutingError` when no route matches.
+/// The emitted view does not escape the result of a helper call, and
+/// Rails does. The `(&quot;|")` alternative in the message check only
+/// tolerates that gap, which exists before this test.
+#[test]
+fn a_helper_recognizes_a_path_with_the_application_routes() {
+    let run = on_the_index(
+        emit_and_run::real_blog().write(
+            "app/helpers/articles_helper.rb",
+            r##"module ArticlesHelper
+  def route_of(path)
+    recognized = Rails.application.routes.recognize_path(path)
+    recognized.map { |key, value| "#{key}=#{value}" }.join(" ")
+  rescue ActionController::RoutingError => e
+    "none: #{e.message}"
+  end
+end
+"##,
+        ),
+        r#"<i id="rp-index"><%= route_of("/articles") %></i>
+<i id="rp-show"><%= route_of("/articles/7?tab=comments") %></i>
+<i id="rp-fragment"><%= route_of("/articles/7#comments") %></i>
+<i id="rp-root"><%= route_of("/") %></i>
+<i id="rp-json"><%= route_of("/articles/7.json") %></i>
+<i id="rp-missing"><%= route_of("/nowhere") %></i>
+<i id="rp-same"><%= Rails.application.routes.recognize_path("/articles/7.json") == { controller: "articles", action: "show", id: "7", format: "json" } %></i>
+"#,
+        r#"    assert_match(/<i id="rp-index">controller=articles action=index<\/i>/, response.body)
+    assert_match(/<i id="rp-show">controller=articles action=show id=7<\/i>/, response.body)
+    assert_match(/<i id="rp-fragment">controller=articles action=show id=7<\/i>/, response.body)
+    assert_match(/<i id="rp-root">controller=articles action=index<\/i>/, response.body)
+    assert_match(/<i id="rp-json">controller=articles action=show id=7 format=json<\/i>/, response.body)
+    assert_match(/<i id="rp-missing">none: No route matches (&quot;|")\/nowhere(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-same">true<\/i>/, response.body)
+"#,
+    );
+    run.assert_passes();
+}
+
 /// B4 in NEXUS_BUGS.md: a partial in `app/views/application/` that a
 /// view in another directory renders. Rails looks in the view's own
 /// directory first, so a same-name partial there wins.
