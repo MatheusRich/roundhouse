@@ -132,8 +132,12 @@ pub(super) fn synthesize_process_action(
     // String reader from a bare `action_name` in the body.
     let param = if reads_action_name { ROUTED_ACTION } else { "action_name" };
     if reads_action_name {
+        // Explicit `self` so Rust emits `self.assign_action_name(...)`
+        // against the shim's `&mut self` method (a receiverless Send
+        // becomes a bare function call). Also feeds `mutates_self`
+        // propagation so `process_action` is not classified static.
         stmts.push(syn(ExprNode::Send {
-            recv: None,
+            recv: Some(syn(ExprNode::SelfRef)),
             method: Symbol::from("assign_action_name"),
             args: vec![var_ref(param)],
             block: None,
@@ -303,8 +307,9 @@ pub(super) fn synthesize_process_action(
         enclosing_class: Some(enclosing_class),
         kind: AccessorKind::Method,
         is_async: false,
-            mutates_self: false,
-            block_param: None,
+        // True when the dispatcher writes `action_name` via the shim.
+        mutates_self: reads_action_name,
+        block_param: None,
     }
 }
 
