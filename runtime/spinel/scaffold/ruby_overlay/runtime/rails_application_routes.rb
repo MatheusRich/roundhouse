@@ -13,6 +13,16 @@
 # (`ActionDispatch::Routing::RouteSet`). The name must not be
 # `RouteTable`: a nested `RouteTable` hides the emitted top-level
 # `RouteTable` that `recognize_path` reads.
+
+module ActionController
+  # Raised by `recognize_path` for a verb that Rails does not accept.
+  # It lives in this overlay and not in runtime/ruby/, so `check` still
+  # reports app code that names it. The Rails superclass is
+  # `ActionControllerError`, which the runtime does not define.
+  class UnknownHttpMethod < StandardError
+  end
+end
+
 module Rails
   class Application
     def routes
@@ -20,18 +30,35 @@ module Rails
     end
 
     module RouteSet
+      # `ActionDispatch::Request::HTTP_METHODS`, in the Rails order.
+      HTTP_METHODS = %w[
+        OPTIONS GET HEAD POST PUT DELETE TRACE CONNECT
+        PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK
+        VERSION-CONTROL REPORT CHECKOUT CHECKIN UNCHECKOUT MKWORKSPACE UPDATE LABEL MERGE BASELINE-CONTROL MKACTIVITY
+        ORDERPATCH ACL SEARCH MKCALENDAR PATCH
+      ].freeze
+
       def self.url_helpers
         UrlHelpers
       end
 
-      # Rails' `recognize_path` for one GET path. The result has Symbol
+      # Rails' `recognize_path` for one path. The result has Symbol
       # keys and String values: `:controller`, `:action`, each dynamic
       # segment, and `:format` last. A namespaced controller gives the
       # flat router name (`"admin_posts"`), not the Rails path.
-      def self.recognize_path(path)
+      # `environment[:method]` is the verb, a Symbol or a String in any
+      # case, and GET is the default. Other keys have no effect.
+      def self.recognize_path(path, environment = {})
+        verb = (environment[:method] || "GET").to_s.upcase
+        # Rails checks the verb before it matches. The check also keeps
+        # out "ANY", which the router uses for a `via: :all` route.
+        unless HTTP_METHODS.include?(verb)
+          accepted = "#{HTTP_METHODS[0...-1].join(", ")}, and #{HTTP_METHODS.last}"
+          raise ActionController::UnknownHttpMethod, "#{verb}, accepted HTTP methods are #{accepted}"
+        end
         # Rails ignores the query and the fragment.
         bare = path.split(/[?#]/, 2).first.to_s
-        matched = ActionDispatch::Router.match("GET", bare, table)
+        matched = ActionDispatch::Router.match(verb, bare, table)
         raise ActionController::RoutingError, "No route matches #{path.inspect}" if matched.nil?
 
         params = matched.path_params

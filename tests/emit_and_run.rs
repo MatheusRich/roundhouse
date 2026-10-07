@@ -3270,6 +3270,11 @@ fn a_partial_reading_a_reserved_word_local_assign_runs() {
 /// expected value is the output of Rails 7.2.4 for the same routes.
 /// Rails returns Symbol keys with String values, puts `:format` last,
 /// and raises `ActionController::RoutingError` when no route matches.
+/// The `:method` of the second argument is the verb, a Symbol or a
+/// String in any case, and GET is the default. A verb that Rails does
+/// not accept raises `ActionController::UnknownHttpMethod`, which is not
+/// a `RoutingError`. The helper rescues it as a `StandardError`: app
+/// code that names the class gets a `check` error.
 /// The emitted view does not escape the result of a helper call, and
 /// Rails does. The `(&quot;|")` alternative in the message check only
 /// tolerates that gap, which exists before this test.
@@ -3279,11 +3284,13 @@ fn a_helper_recognizes_a_path_with_the_application_routes() {
         emit_and_run::real_blog().write(
             "app/helpers/articles_helper.rb",
             r##"module ArticlesHelper
-  def route_of(path)
-    recognized = Rails.application.routes.recognize_path(path)
+  def route_of(path, environment = {})
+    recognized = Rails.application.routes.recognize_path(path, environment)
     recognized.map { |key, value| "#{key}=#{value}" }.join(" ")
   rescue ActionController::RoutingError => e
     "none: #{e.message}"
+  rescue StandardError => e
+    "#{e.class.name}: #{e.message}"
   end
 end
 "##,
@@ -3294,6 +3301,14 @@ end
 <i id="rp-root"><%= route_of("/") %></i>
 <i id="rp-json"><%= route_of("/articles/7.json") %></i>
 <i id="rp-missing"><%= route_of("/nowhere") %></i>
+<i id="rp-get"><%= route_of("/articles", method: :get) %></i>
+<i id="rp-post"><%= route_of("/articles", method: :post) %></i>
+<i id="rp-string"><%= route_of("/articles/7/comments/3", method: "Delete") %></i>
+<i id="rp-no-verb"><%= route_of("/articles", method: :put) %></i>
+<i id="rp-direct"><%= Rails.application.routes.recognize_path("/articles", method: :post)[:action] %></i>
+<i id="rp-head"><%= route_of("/articles/7", method: :head) %></i>
+<i id="rp-any"><%= route_of("/articles", method: :any) %></i>
+<i id="rp-foo"><%= route_of("/articles", method: :foo) %></i>
 <i id="rp-same"><%= Rails.application.routes.recognize_path("/articles/7.json") == { controller: "articles", action: "show", id: "7", format: "json" } %></i>
 "#,
         r#"    assert_match(/<i id="rp-index">controller=articles action=index<\/i>/, response.body)
@@ -3302,6 +3317,14 @@ end
     assert_match(/<i id="rp-root">controller=articles action=index<\/i>/, response.body)
     assert_match(/<i id="rp-json">controller=articles action=show id=7 format=json<\/i>/, response.body)
     assert_match(/<i id="rp-missing">none: No route matches (&quot;|")\/nowhere(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-get">controller=articles action=index<\/i>/, response.body)
+    assert_match(/<i id="rp-post">controller=articles action=create<\/i>/, response.body)
+    assert_match(/<i id="rp-string">controller=comments action=destroy article_id=7 id=3<\/i>/, response.body)
+    assert_match(/<i id="rp-no-verb">none: No route matches (&quot;|")\/articles(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-direct">create<\/i>/, response.body)
+    assert_match(/<i id="rp-head">controller=articles action=show id=7<\/i>/, response.body)
+    assert_includes(response.body, '<i id="rp-any">ActionController::UnknownHttpMethod: ANY, accepted HTTP methods are OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK, VERSION-CONTROL, REPORT, CHECKOUT, CHECKIN, UNCHECKOUT, MKWORKSPACE, UPDATE, LABEL, MERGE, BASELINE-CONTROL, MKACTIVITY, ORDERPATCH, ACL, SEARCH, MKCALENDAR, and PATCH</i>')
+    assert_match(/<i id="rp-foo">ActionController::UnknownHttpMethod: FOO, accepted HTTP methods are OPTIONS, GET, /, response.body)
     assert_match(/<i id="rp-same">true<\/i>/, response.body)
 "#,
     );
