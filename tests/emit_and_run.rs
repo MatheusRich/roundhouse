@@ -3356,6 +3356,64 @@ end
     run.assert_passes();
 }
 
+/// `recognize_path` gives the Rails controller path, not the flat
+/// router name, for a namespaced controller, for the health controller
+/// and for the Active Storage controllers. It skips a redirect route and
+/// tries the later routes, as Rails does. The app has no root route, so
+/// `/` matches no route. Each expected value is the output of Rails
+/// 7.2.4 for the same routes.
+#[test]
+fn a_helper_recognizes_controller_paths_and_skips_redirect_routes() {
+    let run = on_the_index(
+        emit_and_run::real_blog()
+            .edit("config/routes.rb", "  root \"articles#index\"\n", "")
+            .edit(
+                "config/routes.rb",
+                "  resources :articles do",
+                "  namespace :admin do\n    resources :articles, only: [:index]\n  end\n  \
+                 get \"old\", to: redirect(\"/articles\")\n  \
+                 get \"moved\", to: redirect(\"/articles\")\n  \
+                 get \"moved\", to: \"articles#index\"\n  \
+                 get \"up\" => \"rails/health#show\"\n  \
+                 resources :articles do",
+            )
+            .write(
+                "app/controllers/admin/articles_controller.rb",
+                "class Admin::ArticlesController < ApplicationController\n  def index\n    @articles = Article.all\n  end\nend\n",
+            )
+            .write("app/views/admin/articles/index.html.erb", "<p>admin</p>\n")
+            .write(
+                "app/helpers/articles_helper.rb",
+                r##"module ArticlesHelper
+  def route_of(path)
+    recognized = Rails.application.routes.recognize_path(path)
+    recognized.map { |key, value| "#{key}=#{value}" }.join(" ")
+  rescue ActionController::RoutingError => e
+    "none: #{e.message}"
+  end
+end
+"##,
+            ),
+        r#"<i id="rp-namespaced"><%= route_of("/admin/articles") %></i>
+<i id="rp-redirect"><%= route_of("/old") %></i>
+<i id="rp-after-redirect"><%= route_of("/moved") %></i>
+<i id="rp-health"><%= route_of("/up") %></i>
+<i id="rp-disk"><%= route_of("/rails/active_storage/disk/k/x.png") %></i>
+<i id="rp-blob"><%= route_of("/rails/active_storage/blobs/redirect/abc/x.png") %></i>
+<i id="rp-no-root"><%= route_of("/") %></i>
+"#,
+        r#"    assert_match(/<i id="rp-namespaced">controller=admin\/articles action=index<\/i>/, response.body)
+    assert_match(/<i id="rp-redirect">none: No route matches (&quot;|")\/old(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-after-redirect">controller=articles action=index<\/i>/, response.body)
+    assert_match(/<i id="rp-health">controller=rails\/health action=show<\/i>/, response.body)
+    assert_match(/<i id="rp-disk">controller=active_storage\/disk action=show encoded_key=k filename=x format=png<\/i>/, response.body)
+    assert_match(/<i id="rp-blob">controller=active_storage\/blobs\/redirect action=show signed_id=abc filename=x format=png<\/i>/, response.body)
+    assert_match(/<i id="rp-no-root">none: No route matches (&quot;|")\/(&quot;|")<\/i>/, response.body)
+"#,
+    );
+    run.assert_passes();
+}
+
 /// B4 in NEXUS_BUGS.md: a partial in `app/views/application/` that a
 /// view in another directory renders. Rails looks in the view's own
 /// directory first, so a same-name partial there wins.

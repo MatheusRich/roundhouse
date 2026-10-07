@@ -39,14 +39,25 @@ module Rails
         ORDERPATCH ACL SEARCH MKCALENDAR PATCH
       ].freeze
 
+      # The Rails paths of the Active Storage controllers that
+      # `ActiveStorage::Routes.table` names. The emitted
+      # `RouteTable::CONTROLLER_PATHS` holds the app's namespaced ones.
+      CONTROLLER_PATHS = {
+        active_storage_blobs_redirect: "active_storage/blobs/redirect",
+        active_storage_representations_redirect: "active_storage/representations/redirect",
+        active_storage_disk: "active_storage/disk",
+        active_storage_direct_uploads: "active_storage/direct_uploads"
+      }.freeze
+
       def self.url_helpers
         UrlHelpers
       end
 
       # Rails' `recognize_path` for one path. The result has Symbol
       # keys and String values: `:controller`, `:action`, each dynamic
-      # segment, and `:format` last. A namespaced controller gives the
-      # flat router name (`"admin_posts"`), not the Rails path.
+      # segment, and `:format` last. `:controller` is the Rails path of
+      # a namespaced or Active Storage controller (`"admin/posts"`), and
+      # the router symbol of any other controller.
       # `environment[:method]` is the verb, a Symbol or a String in any
       # case, and GET is the default. Other keys have no effect.
       def self.recognize_path(path, environment = {})
@@ -82,7 +93,8 @@ module Rails
         raise ActionController::RoutingError, "No route matches #{path.inspect}" if matched.nil?
 
         params = matched.path_params
-        recognized = { controller: matched.controller.to_s, action: matched.action.to_s }
+        controller = CONTROLLER_PATHS[matched.controller] || RouteTable::CONTROLLER_PATHS[matched.controller]
+        recognized = { controller: controller || matched.controller.to_s, action: matched.action.to_s }
         params.each { |name, value| recognized[name.to_sym] = value unless name == "format" }
         recognized[:format] = params["format"] if params.key?("format")
         recognized
@@ -102,10 +114,13 @@ module Rails
       # The table that the dispatcher composes, built once.
       # `RouteTable.table` makes new Route objects on each call. The
       # routes emit defines `RouteTable.root` only for an app with a
-      # root route.
+      # root route. Rails `recognize_path` skips a redirect route and
+      # tries the later routes, so the table leaves the redirect routes
+      # out.
       def self.table
-        @table ||= (RouteTable.respond_to?(:root) ? [RouteTable.root] : []) +
-                   RouteTable.table + ActiveStorage::Routes.table
+        @table ||= ((RouteTable.respond_to?(:root) ? [RouteTable.root] : []) +
+                    RouteTable.table + ActiveStorage::Routes.table)
+                   .reject { |route| route.controller == :roundhouse_redirects }
       end
     end
 
