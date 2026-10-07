@@ -632,8 +632,10 @@ module ActionController
       # minted. The ternary keeps an absent secret as `""` so the stub
       # `csrf_token_valid?` can check-none; ruby-family
       # `AuthenticityToken.valid?` still fails closed on empty.
-      raw = session[:_csrf_token]
-      expected = raw.nil? ? "" : raw.to_s
+      # Call `nil?` / `to_s` on the index send (not a local). Rust
+      # Session `#[]` is `Option<String>`; a local is typed Untyped
+      # and would emit `.is_null()` / Value `to_s`.
+      expected = session[:_csrf_token].nil? ? "" : session[:_csrf_token].to_s
       # `.fetch(k, "")` — not bare `params[k]`. Crystal Hash#[] raises
       # KeyError on a missing key; Python's `.get(k)` returns None and
       # `.to_s` then AttributeErrors. Cross-target nil-safe read.

@@ -1078,6 +1078,26 @@ end
         );
     }
 
+    /// Session `#[]` rust-emits `Option<String>`. `verified_request?`
+    /// must use `.is_none()` / `unwrap_or_default`, not Value `.is_null()`.
+    #[test]
+    fn verified_request_session_nil_uses_is_none() {
+        let src = emit_action_controller();
+        let body = method_body(&src, "verified_request_pred");
+        assert!(
+            body.contains("is_none()"),
+            "session[] nil? should be Option::is_none:\n{body}"
+        );
+        assert!(
+            !body.contains("is_null()"),
+            "session[] nil? must not emit Value::is_null:\n{body}"
+        );
+        assert!(
+            body.contains("unwrap_or_default()"),
+            "session[] to_s should be Option unwrap_or_default:\n{body}"
+        );
+    }
+
     /// Column-union params render as `serde_json::Value`; `nil?` is
     /// `.is_null()`, not Option `.is_none()`.
     #[test]
