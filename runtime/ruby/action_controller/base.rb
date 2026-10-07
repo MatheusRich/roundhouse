@@ -626,22 +626,25 @@ module ActionController
       return true unless ActionController.forgery_flag
       verb = @request_method.to_s
       return true if verb == "" || verb == "GET" || verb == "HEAD"
-      # Nil-then-`to_s` — not `session[:k].to_s` alone. Strict-target
-      # emit turns a missing key into JS `undefined`, and `String(undefined)`
-      # is `"undefined"`, which would fail closed even when no secret was
-      # minted. The ternary keeps an absent secret as `""` so the stub
-      # `csrf_token_valid?` can check-none; ruby-family
-      # `AuthenticityToken.valid?` still fails closed on empty.
-      # Call `nil?` / `to_s` on the index send (not a local). Rust
-      # Session `#[]` is `Option<String>`; a local is typed Untyped
-      # and would emit `.is_null()` / Value `to_s`.
-      expected = session[:_csrf_token].nil? ? "" : session[:_csrf_token].to_s
-      # `.fetch(k, "")` — not bare `params[k]`. Crystal Hash#[] raises
-      # KeyError on a missing key; Python's `.get(k)` returns None and
-      # `.to_s` then AttributeErrors. Cross-target nil-safe read.
+      # Nil-then-`to_s` lives in `csrf_session_secret` so the secret is
+      # a typed String at this call (Rust `csrf_token_valid?` takes
+      # `&str`; an Untyped local would pass an owned String).
       token = params.fetch("authenticity_token", "")
-      return true if ActionController.csrf_token_valid?(token.to_s, expected)
-      ActionController.csrf_token_valid?(csrf_header_token, expected)
+      return true if ActionController.csrf_token_valid?(token.to_s, csrf_session_secret)
+      ActionController.csrf_token_valid?(csrf_header_token, csrf_session_secret)
+    end
+
+    # Nil-then-`to_s` — not `session[:k].to_s` alone. Strict-target
+    # emit turns a missing key into JS `undefined`, and `String(undefined)`
+    # is `"undefined"`, which would fail closed even when no secret was
+    # minted. The early `nil?` keeps an absent secret as `""` so the
+    # stub `csrf_token_valid?` can check-none; ruby-family
+    # `AuthenticityToken.valid?` still fails closed on empty.
+    # `nil?` / `to_s` stay on the index send: Rust Session `#[]` is
+    # `Option<String>`.
+    def csrf_session_secret
+      return "" if session[:_csrf_token].nil?
+      session[:_csrf_token].to_s
     end
 
     def csrf_header_token
