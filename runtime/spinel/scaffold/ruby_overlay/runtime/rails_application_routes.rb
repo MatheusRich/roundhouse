@@ -13,6 +13,7 @@
 # (`ActionDispatch::Routing::RouteSet`). The name must not be
 # `RouteTable`: a nested `RouteTable` hides the emitted top-level
 # `RouteTable` that `recognize_path` reads.
+require "uri"
 
 module ActionController
   # Raised by `recognize_path` for a verb that Rails does not accept.
@@ -49,16 +50,35 @@ module Rails
       # `environment[:method]` is the verb, a Symbol or a String in any
       # case, and GET is the default. Other keys have no effect.
       def self.recognize_path(path, environment = {})
+        # Rails normalizes a path, but not a full URL. The error message
+        # shows the result.
+        path = normalize_path(path) unless path.to_s.include?("://")
+        # Rack's `MockRequest.env_for` reads the request path with this
+        # parser. The query and the fragment have no effect. The router
+        # ignores host and subdomain constraints, so the host has no
+        # effect either.
+        begin
+          uri = URI::Parser.new.parse(path)
+        rescue URI::InvalidURIError => e
+          raise ActionController::RoutingError, e.message
+        end
+        request_path = uri.path.to_s
+        request_path = "/#{request_path}" unless request_path.start_with?("/")
         verb = (environment[:method] || "GET").to_s.upcase
-        # Rails checks the verb before it matches. The check also keeps
-        # out "ANY", which the router uses for a `via: :all` route.
+        # Rails checks the verb after it parses the path and before it
+        # matches. The check also keeps out "ANY", which the router uses
+        # for a `via: :all` route.
         unless HTTP_METHODS.include?(verb)
           accepted = "#{HTTP_METHODS[0...-1].join(", ")}, and #{HTTP_METHODS.last}"
           raise ActionController::UnknownHttpMethod, "#{verb}, accepted HTTP methods are #{accepted}"
         end
-        # Rails ignores the query and the fragment.
-        bare = path.split(/[?#]/, 2).first.to_s
-        matched = ActionDispatch::Router.match(verb, bare, table)
+        matched = ActionDispatch::Router.match(verb, request_path, table)
+        # The router ignores a trailing slash. Rails does not normalize
+        # the path of a full URL, so there a trailing slash matches no
+        # route without a glob. On a glob route, Rails keeps the slash in
+        # the glob value. The match result does not show a glob, so this
+        # method gives no match for that case too.
+        matched = nil if request_path != "/" && request_path.end_with?("/")
         raise ActionController::RoutingError, "No route matches #{path.inspect}" if matched.nil?
 
         params = matched.path_params
@@ -67,6 +87,17 @@ module Rails
         recognized[:format] = params["format"] if params.key?("format")
         recognized
       end
+
+      # `ActionDispatch::Journey::Router::Utils.normalize_path`: one
+      # leading slash, no doubled slashes, no trailing slash, and an
+      # uppercase percent-encoded octet.
+      def self.normalize_path(path)
+        normalized = "/#{path}".squeeze("/")
+        return normalized if normalized == "/"
+
+        normalized.delete_suffix("/").gsub(/(%[a-f0-9]{2})/) { $1.upcase }
+      end
+      private_class_method :normalize_path
 
       # The table that the dispatcher composes, built once.
       # `RouteTable.table` makes new Route objects on each call. The

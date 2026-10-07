@@ -3270,6 +3270,9 @@ fn a_partial_reading_a_reserved_word_local_assign_runs() {
 /// expected value is the output of Rails 7.2.4 for the same routes.
 /// Rails returns Symbol keys with String values, puts `:format` last,
 /// and raises `ActionController::RoutingError` when no route matches.
+/// Rails takes a full URL, and normalizes any other path: one leading
+/// slash, no doubled slashes and no trailing slash. The error message
+/// shows the normalized path.
 /// The `:method` of the second argument is the verb, a Symbol or a
 /// String in any case, and GET is the default. A verb that Rails does
 /// not accept raises `ActionController::UnknownHttpMethod`, which is not
@@ -3309,6 +3312,17 @@ end
 <i id="rp-head"><%= route_of("/articles/7", method: :head) %></i>
 <i id="rp-any"><%= route_of("/articles", method: :any) %></i>
 <i id="rp-foo"><%= route_of("/articles", method: :foo) %></i>
+<i id="rp-url"><%= route_of("http://example.com/articles/7") %></i>
+<i id="rp-url-port"><%= route_of("https://example.com:3000/articles?x=1") %></i>
+<i id="rp-relative"><%= route_of("articles/7") %></i>
+<i id="rp-relative-miss"><%= route_of("nowhere") %></i>
+<i id="rp-relative-url-query"><%= route_of("articles/7?next=http://x") %></i>
+<i id="rp-doubled"><%= route_of("/articles//7") %></i>
+<i id="rp-trailing-miss"><%= route_of("/nowhere/") %></i>
+<i id="rp-bad-uri"><%= route_of("/articles/a b") %></i>
+<i id="rp-url-trailing"><%= route_of("http://example.com/articles/7/") %></i>
+<i id="rp-percent"><%= route_of("/nowhere/%7e") %></i>
+<i id="rp-bad-uri-first"><%= route_of("/a b", method: :foo) %></i>
 <i id="rp-same"><%= Rails.application.routes.recognize_path("/articles/7.json") == { controller: "articles", action: "show", id: "7", format: "json" } %></i>
 "#,
         r#"    assert_match(/<i id="rp-index">controller=articles action=index<\/i>/, response.body)
@@ -3325,6 +3339,17 @@ end
     assert_match(/<i id="rp-head">controller=articles action=show id=7<\/i>/, response.body)
     assert_includes(response.body, '<i id="rp-any">ActionController::UnknownHttpMethod: ANY, accepted HTTP methods are OPTIONS, GET, HEAD, POST, PUT, DELETE, TRACE, CONNECT, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK, VERSION-CONTROL, REPORT, CHECKOUT, CHECKIN, UNCHECKOUT, MKWORKSPACE, UPDATE, LABEL, MERGE, BASELINE-CONTROL, MKACTIVITY, ORDERPATCH, ACL, SEARCH, MKCALENDAR, and PATCH</i>')
     assert_match(/<i id="rp-foo">ActionController::UnknownHttpMethod: FOO, accepted HTTP methods are OPTIONS, GET, /, response.body)
+    assert_match(/<i id="rp-url">controller=articles action=show id=7<\/i>/, response.body)
+    assert_match(/<i id="rp-url-port">controller=articles action=index<\/i>/, response.body)
+    assert_match(/<i id="rp-relative">controller=articles action=show id=7<\/i>/, response.body)
+    assert_match(/<i id="rp-relative-miss">none: No route matches (&quot;|")\/nowhere(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-relative-url-query">controller=articles action=show id=7<\/i>/, response.body)
+    assert_match(/<i id="rp-doubled">controller=articles action=show id=7<\/i>/, response.body)
+    assert_match(/<i id="rp-trailing-miss">none: No route matches (&quot;|")\/nowhere(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-bad-uri">none: bad URI \(is not URI\?\): (&quot;|")\/articles\/a b(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-url-trailing">none: No route matches (&quot;|")http:\/\/example.com\/articles\/7\/(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-percent">none: No route matches (&quot;|")\/nowhere\/%7E(&quot;|")<\/i>/, response.body)
+    assert_match(/<i id="rp-bad-uri-first">none: bad URI \(is not URI\?\): (&quot;|")\/a b(&quot;|")<\/i>/, response.body)
     assert_match(/<i id="rp-same">true<\/i>/, response.body)
 "#,
     );
