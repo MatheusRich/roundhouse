@@ -124,22 +124,20 @@ fn params_resolves_via_implicit_self_in_action_body() {
     assert_eq!(method.as_str(), "[]");
     let params_recv = recv.as_ref().expect("bracket has a receiver");
 
-    // `params` (implicit self Send) — now resolved via ctx.self_ty to Hash<Sym, Str>.
+    // `params` (implicit self Send) — now resolved via ctx.self_ty to ActionController::Parameters.
     match params_recv.ty.as_ref().expect("params ty populated") {
-        Ty::Hash { key, value } => {
-            assert!(matches!(**key, Ty::Sym));
-            assert!(matches!(**value, Ty::Str));
-        }
-        other => panic!("expected Hash<Sym, Str>, got {other:?}"),
+        Ty::Class { id, .. } => assert_eq!(id.0.as_str(), "ActionController::Parameters"),
+        other => panic!("expected ActionController::Parameters, got {other:?}"),
     }
 
-    // `params[:id]` resolves to Union<Str, Nil>.
+    // `params[:id]` resolves to the element union: a String among
+    // Array / Parameters arms, or nil.
     match bracket_send.ty.as_ref().expect("bracket ty populated") {
         Ty::Union { variants } => {
             assert!(variants.iter().any(|v| matches!(v, Ty::Str)));
             assert!(variants.iter().any(|v| matches!(v, Ty::Nil)));
         }
-        other => panic!("expected Union<Str, Nil>, got {other:?}"),
+        other => panic!("expected the params element union, got {other:?}"),
     }
 }
 
@@ -2711,6 +2709,169 @@ end
     let failures = send_dispatch_failures(&app);
     for m in ["at_beginning_of_month", "prev_month", "next_day", "weeks_ago", "end_of_minute", "yesterday", "yesterday?", "tomorrow?", "all_month", "all_day", "first", "cover?"] {
         assert!(!failures.iter().any(|f| f == m), "`{m}` should type on a Time; failures = {failures:?}");
+    }
+}
+
+#[test]
+fn activesupport_calendar_methods_type_on_a_date() {
+    let app = app_from_files(&[
+        (
+            "app/models/application_record.rb",
+            "class ApplicationRecord < ActiveRecord::Base\nend\n",
+        ),
+        (
+            "db/schema.rb",
+            "ActiveRecord::Schema.define do\n  create_table \"things\" do |t|\n    t.date \"due_on\"\n  end\nend\n",
+        ),
+        (
+            "app/models/thing.rb",
+            r#"class Thing < ApplicationRecord
+  def window
+    d = due_on
+    [Date.current.year, Date.yesterday.month, d.beginning_of_month.day, d.end_of_month.day,
+     d.next_month.month, d.yesterday.day, d.in_time_zone("UTC").hour, (d + 2).day,
+     d.all_month.begin.month, 1.in_time_zone("UTC").year]
+  end
+end
+"#,
+        ),
+    ]);
+
+    let failures = send_dispatch_failures(&app);
+    for m in [
+        "current",
+        "yesterday",
+        "beginning_of_month",
+        "end_of_month",
+        "next_month",
+        "in_time_zone",
+        "+",
+        "all_month",
+        "begin",
+    ] {
+        assert!(
+            !failures.iter().any(|f| f == m),
+            "`{m}` should type on Date / Integer calendar; failures = {failures:?}"
+        );
+    }
+}
+
+#[test]
+fn date_minus_untyped_stays_gradual() {
+    // `Date - Untyped` might be Date−Date (Rational) or Date−Integer
+    // (Date). Returning Date would green-light Date-only follow-ups.
+    // `Integer#ago` is typed Untyped (Time-ish), a stable Untyped operand.
+    let app = app_from_files(&[
+        (
+            "app/models/application_record.rb",
+            "class ApplicationRecord < ActiveRecord::Base\nend\n",
+        ),
+        (
+            "db/schema.rb",
+            "ActiveRecord::Schema.define do\n  create_table \"things\" do |t|\n    t.date \"due_on\"\n  end\nend\n",
+        ),
+        (
+            "app/models/thing.rb",
+            r#"class Thing < ApplicationRecord
+  def shift
+    due_on - 1.ago
+  end
+end
+"#,
+        ),
+    ]);
+    let thing = app
+        .models
+        .iter()
+        .find(|m| m.name.0.as_str() == "Thing")
+        .expect("Thing");
+    let shift = thing
+        .methods()
+        .find(|m| m.name.as_str() == "shift")
+        .expect("shift");
+    match shift.body.ty.as_ref() {
+        Some(Ty::Untyped) => {}
+        other => panic!("Date − Untyped must stay Untyped, got {other:?}"),
+    }
+}
+
+#[test]
+fn date_plus_untyped_stays_gradual() {
+    // Same gradual rule as minus: Spinel Date has no `+`, and lowering
+    // only grounds Integer/Var shifts. Typing `Date` here would claim
+    // support the emit does not have for Untyped operands.
+    let app = app_from_files(&[
+        (
+            "app/models/application_record.rb",
+            "class ApplicationRecord < ActiveRecord::Base\nend\n",
+        ),
+        (
+            "db/schema.rb",
+            "ActiveRecord::Schema.define do\n  create_table \"things\" do |t|\n    t.date \"due_on\"\n  end\nend\n",
+        ),
+        (
+            "app/models/thing.rb",
+            r#"class Thing < ApplicationRecord
+  def shift
+    due_on + 1.ago
+  end
+end
+"#,
+        ),
+    ]);
+    let thing = app
+        .models
+        .iter()
+        .find(|m| m.name.0.as_str() == "Thing")
+        .expect("Thing");
+    let shift = thing
+        .methods()
+        .find(|m| m.name.as_str() == "shift")
+        .expect("shift");
+    match shift.body.ty.as_ref() {
+        Some(Ty::Untyped) => {}
+        other => panic!("Date + Untyped must stay Untyped, got {other:?}"),
+    }
+}
+
+#[test]
+fn date_shift_untyped_stays_gradual() {
+    // `>>` / `<<` are native on Spinel Date, but an Untyped operand is
+    // not known to be an Integer month count — same gradual bar as `+`.
+    let app = app_from_files(&[
+        (
+            "app/models/application_record.rb",
+            "class ApplicationRecord < ActiveRecord::Base\nend\n",
+        ),
+        (
+            "db/schema.rb",
+            "ActiveRecord::Schema.define do\n  create_table \"things\" do |t|\n    t.date \"due_on\"\n  end\nend\n",
+        ),
+        (
+            "app/models/thing.rb",
+            r#"class Thing < ApplicationRecord
+  def shift_right
+    due_on >> 1.ago
+  end
+
+  def shift_left
+    due_on << 1.ago
+  end
+end
+"#,
+        ),
+    ]);
+    let thing = app
+        .models
+        .iter()
+        .find(|m| m.name.0.as_str() == "Thing")
+        .expect("Thing");
+    for name in ["shift_right", "shift_left"] {
+        let m = thing.methods().find(|m| m.name.as_str() == name).expect(name);
+        match m.body.ty.as_ref() {
+            Some(Ty::Untyped) => {}
+            other => panic!("Date {name} with Untyped must stay Untyped, got {other:?}"),
+        }
     }
 }
 

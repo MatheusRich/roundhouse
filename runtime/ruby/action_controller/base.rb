@@ -5,7 +5,14 @@ require_relative "../action_view"
 module ActionController
   # One-slot array so class-level CSRF state is a store every target
   # can index, not a `self` ivar or `class << self` writer.
-  FORGERY_SLOT = [true]
+  #
+  # Default OFF: extras transpile this file without
+  # `authenticity_token.rb` (empty `masked_authenticity_token` stub),
+  # so fail-closed CSRF turns every POST into 422. The ruby-family
+  # reopen in authenticity_token.rb flips the flag on when the real
+  # masked-token implementation is present. Tests that need the check
+  # set `allow_forgery_protection = true` explicitly.
+  FORGERY_SLOT = [false]
 
   def self.forgery_flag
     FORGERY_SLOT[0] == true
@@ -15,6 +22,20 @@ module ActionController
     FORGERY_SLOT[0] = value
   end
 
+  # Empty until `authenticity_token.rb` reopens these: strict-target
+  # emit of this file must not call `Current.session` or XOR bytes.
+  # Strict targets therefore issue no token and check none (see
+  # docs/guide/rails-coverage.md): an empty session secret means
+  # "no minting on this lane," not "fail closed."
+  def self.masked_authenticity_token
+    ""
+  end
+
+  def self.csrf_token_valid?(given, expected)
+    return true if expected.empty?
+    given.length > 0 && given == expected
+  end
+
   # WHATWG URL-parser preprocessing: drop tab/CR/LF/NUL anywhere, then
   # strip leading and trailing C0 controls and spaces. A tab in the
   # middle (`/\t/evil`) becomes `//evil` so host classification sees it.
@@ -22,16 +43,20 @@ module ActionController
   REDIRECT_LINE_BREAK_PATTERN = /[\r\n\0\t]/.freeze
 
   # Puma's illegal-header rule: drop a key/value that cannot be one
-  # HTTP/1.1 line. Character walks (`[i, 1]`), not `getbyte`/`bytesize`
-  # — those do not exist on strict-target strings.
+  # HTTP/1.1 line. Keys scan UTF-8 bytes; values walk characters and
+  # recognize the CRLF grapheme. CRuby/JRuby replace these portable
+  # predicates with regex checks in the target overlay.
   def self.header_key_ok?(k)
     return false if k.nil?
-    n = k.length
+    # Delimiters can share a Swift grapheme with a combining mark. Inspect
+    # their UTF-8 bytes so the policy does not depend on string indexing.
+    bytes = k.bytes
+    n = bytes.length
     return false if n == 0
     i = 0
     while i < n
-      c = k[i, 1].to_s
-      return false if c == "\"" || c == ":" || c == " " || header_control?(c)
+      byte = bytes[i]
+      return false if byte <= 32 || byte == 34 || byte == 58 || byte == 127
       i += 1
     end
     true
@@ -52,6 +77,8 @@ module ActionController
   end
 
   def self.header_control?(c)
+    # Swift strings index grapheme clusters: CRLF can be one element.
+    return true if c == "\r\n"
     c == "\0" || c == "\r" || c == "\n" || c == "\x01" || c == "\x02" ||
       c == "\x03" || c == "\x04" || c == "\x05" || c == "\x06" || c == "\x07" ||
       c == "\x08" || c == "\t" || c == "\x0b" || c == "\x0c" || c == "\x0e" ||
@@ -67,27 +94,41 @@ module ActionController
       s = s.gsub(REDIRECT_LINE_BREAK_PATTERN, REDIRECT_LINE_BREAKS)
     end
     s = s.tr("\\", "/")
-    # No `break`: go/typescript emit cannot lower it (MCP wont_lower
-    # and the TS real-blog gate both flagged this walk).
-    keep = true
-    while keep && s.length > 0
-      c = s[0, 1].to_s
-      if c == " " || header_control?(c)
-        s = s[1, s.length].to_s
-      else
-        keep = false
-      end
-    end
-    keep = true
-    while keep && s.length > 0
-      c = s[s.length - 1, 1].to_s
-      if c == " " || header_control?(c)
-        s = s[0, s.length - 1].to_s
-      else
-        keep = false
-      end
-    end
+    # Index-walk strip helpers (one counter while each). Not
+    # `while keep && …` (Elixir BoolOp) and not two whiles in this
+    # method (while_to_recursion allows one top-level while per method).
+    s = strip_leading_controls(s)
+    s = strip_trailing_controls(s)
     s
+  end
+
+  def self.strip_leading_controls(s)
+    # Index walk — not per-char recursion (stack-safe on long pads).
+    # Canonical counter `while` so Elixir while_to_recursion applies:
+    # early return when a kept char is found; trailing `i += 1` step.
+    n = s.length
+    i = 0
+    while i < n
+      c = s[i, 1].to_s
+      if !(c == " " || header_control?(c))
+        return s[i, n - i].to_s
+      end
+      i += 1
+    end
+    ""
+  end
+
+  def self.strip_trailing_controls(s)
+    n = s.length
+    i = n
+    while i > 0
+      c = s[i - 1, 1].to_s
+      if !(c == " " || header_control?(c))
+        return s[0, i].to_s
+      end
+      i -= 1
+    end
+    ""
   end
 
   # Host of an absolute URL (`http://h/path`), or "" when the value is
@@ -567,26 +608,38 @@ module ActionController
     end
 
     # Rails' `verify_authenticity_token`: GET/HEAD pass; anything else
-    # must carry the session token as `authenticity_token` or
-    # `X-CSRF-Token`. An empty session token matches nothing (fail
-    # closed). Tests set `allow_forgery_protection = false`.
+    # must carry a token that unmasks to the session secret, as
+    # `authenticity_token` or `X-CSRF-Token`. An empty session token
+    # matches nothing (fail closed). Tests set
+    # `allow_forgery_protection = false`.
+    #
+    # No trailing `nil`: Elixir's mutation-threaded emit would assign
+    # the `unless`/`render` result to `record` and then discard it,
+    # tripping `--warnings-as-errors` on an unused variable.
     def verify_authenticity_token
       unless verified_request?
         render "<h1>422 Unprocessable Content</h1>", status: :unprocessable_content
       end
-      nil
     end
 
     def verified_request?
       return true unless ActionController.forgery_flag
       verb = @request_method.to_s
       return true if verb == "" || verb == "GET" || verb == "HEAD"
-      expected = session[:_csrf_token].to_s
-      return false if expected.empty?
-      given = params["authenticity_token"].to_s
-      return true if given.length > 0 && given == expected
-      header = csrf_header_token
-      header.length > 0 && header == expected
+      # Nil-then-`to_s` — not `session[:k].to_s` alone. Strict-target
+      # emit turns a missing key into JS `undefined`, and `String(undefined)`
+      # is `"undefined"`, which would fail closed even when no secret was
+      # minted. The ternary keeps an absent secret as `""` so the stub
+      # `csrf_token_valid?` can check-none; ruby-family
+      # `AuthenticityToken.valid?` still fails closed on empty.
+      raw = session[:_csrf_token]
+      expected = raw.nil? ? "" : raw.to_s
+      # `.fetch(k, "")` — not bare `params[k]`. Crystal Hash#[] raises
+      # KeyError on a missing key; Python's `.get(k)` returns None and
+      # `.to_s` then AttributeErrors. Cross-target nil-safe read.
+      token = params.fetch("authenticity_token", "")
+      return true if ActionController.csrf_token_valid?(token.to_s, expected)
+      ActionController.csrf_token_valid?(csrf_header_token, expected)
     end
 
     def csrf_header_token
